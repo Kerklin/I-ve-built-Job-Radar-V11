@@ -1,0 +1,60 @@
+# Job Radar V11 - must live at: .github/workflows/radar.yml
+# Node.js: only 2 actions are used, both on Node 24:
+#   actions/upload-pages-artifact@v5 (uses upload-artifact v7) and actions/deploy-pages@v5.
+# No checkout, no setup-python. Requires Settings > Pages > Source = "GitHub Actions".
+# ubuntu-24.04 is pinned on purpose: ubuntu-latest moves to Ubuntu 26 from 19 Oct 2026 (notice).
+name: Job Radar
+on:
+  schedule:
+    - cron: "17 */6 * * *"      # every 6 hours (UTC)
+  workflow_dispatch:             # "Run workflow" button
+permissions: {}
+concurrency:
+  group: job-radar
+  cancel-in-progress: false
+jobs:
+  radar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write            # save jobs.json (the memory)
+    steps:
+      - name: Get code (plain git)
+        env:
+          TOKEN: ${{ github.token }}
+        run: git clone --depth 1 --branch "$GITHUB_REF_NAME" "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" .
+      - name: Self-tests (stop here if anything is broken)
+        run: python3 radar.py --test
+      - name: Workflow audit (reports obsolete actions / ubuntu-latest in ANY workflow file)
+        run: python3 radar.py --audit | tee -a "$GITHUB_STEP_SUMMARY" || true
+      - name: Collect jobs
+        env:
+          RELIEFWEB_APPNAME: ${{ secrets.RELIEFWEB_APPNAME || vars.RELIEFWEB_APPNAME }}
+        run: |
+          python3 radar.py
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Save memory (jobs.json)
+        run: |
+          git config user.name  "job-radar-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add jobs.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "radar $(date -u +%F_%H%M)"
+          git pull -q --rebase && git push -q
+      - name: Package web page
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+  deploy:
+    needs: radar
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publish web page
+        id: deployment
+        uses: actions/deploy-pages@v5
